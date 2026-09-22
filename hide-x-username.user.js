@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hide X/Twitter username (bottom-left + profile page)
 // @namespace    http://tampermonkey.net/
-// @version      4.0
+// @version      4.1
 // @description  Replaces your @username with question marks in the bottom-left corner of x.com and on your profile page; hovering the profile handle reveals it until the cursor leaves
 // @match        https://x.com/*
 // @match        https://twitter.com/*
@@ -30,10 +30,13 @@
       let node;
       while ((node = walker.nextNode())) {
         const t = node.nodeValue;
-        if (t && t.startsWith('@') && t.length > 1) {
-          if (!myHandle) myHandle = t.slice(1);
-          node.nodeValue = maskText(t);
-        }
+        if (!t || !t.startsWith('@') || t.length < 2) continue;
+        if (!myHandle) myHandle = t.slice(1);
+        const masked = maskText(t);
+        // Only write when the value actually differs: writing nodeValue fires a
+        // characterData mutation even for identical text, which would re-trigger
+        // the MutationObserver forever and freeze the page.
+        if (node.nodeValue !== masked) node.nodeValue = masked;
       }
     });
   }
@@ -48,10 +51,13 @@
     main.querySelectorAll('span').forEach((span) => {
       if (span.children.length > 0) return;
       const t = span.textContent;
-      if (!isMyHandleText(t)) return;
-      if (span.closest('article') || span.closest('a')) return;
-      maskedSpan = span;
-      if (!hovering) span.textContent = maskText(t);
+      if (isMyHandleText(t)) {
+        maskedSpan = span;
+        if (!hovering) {
+          const masked = maskText(t);
+          if (span.textContent !== masked) span.textContent = masked;
+        }
+      }
     });
   }
 
