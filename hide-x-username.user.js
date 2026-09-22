@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Hide X/Twitter username (bottom-left + profile page)
 // @namespace    http://tampermonkey.net/
-// @version      3.0
-// @description  Replaces your @username with question marks in the bottom-left corner of x.com and on your profile page; hovering the profile handle briefly reveals it
+// @version      4.0
+// @description  Replaces your @username with question marks in the bottom-left corner of x.com and on your profile page; hovering the profile handle reveals it until the cursor leaves
 // @match        https://x.com/*
 // @match        https://twitter.com/*
 // @run-at       document-start
@@ -12,14 +12,16 @@
 (function () {
   'use strict';
 
-  let myHandle = null;       // captured from the sidebar button before masking
-  let hoveringProfile = false;
+  let myHandle = null;          // captured from the sidebar button before masking
+  let hovering = false;
+  let maskedSpan = null;        // last profile-handle span we masked
 
-  function maskHandle(text) {
-    if (text.startsWith('@') && text.length > 1) {
-      return '@' + '?'.repeat(text.length - 1);
-    }
-    return null;
+  function maskText(t) {
+    return '@' + '?'.repeat(t.length - 1);
+  }
+
+  function isMyHandleText(t) {
+    return !!myHandle && t && t.toLowerCase() === ('@' + myHandle).toLowerCase();
   }
 
   function patchSwitcher() {
@@ -27,56 +29,53 @@
       const walker = document.createTreeWalker(btn, NodeFilter.SHOW_TEXT);
       let node;
       while ((node = walker.nextNode())) {
-        const text = node.nodeValue;
-        if (text && text.startsWith('@') && text.length > 1) {
-          if (!myHandle) myHandle = text.slice(1);
-          node.nodeValue = maskHandle(text);
+        const t = node.nodeValue;
+        if (t && t.startsWith('@') && t.length > 1) {
+          if (!myHandle) myHandle = t.slice(1);
+          node.nodeValue = maskText(t);
         }
       }
     });
   }
 
-  function revealProfileName(el) {
-    const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
-    let node;
-    while ((node = walker.nextNode())) {
-      if (node.nodeValue && node.nodeValue.startsWith('@?')) {
-        node.nodeValue = '@' + myHandle;
-      }
-    }
-  }
-
-  function maskProfileName(el) {
-    const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
-    let node;
-    while ((node = walker.nextNode())) {
-      const text = node.nodeValue;
-      if (text && text.toLowerCase() === '@' + myHandle.toLowerCase()) {
-        node.nodeValue = maskHandle(text);
-      }
-    }
-  }
-
-  function attachHover(el) {
-    if (el.dataset.hideXHandle === 'done') return;
-    el.dataset.hideXHandle = 'done';
-    el.addEventListener('mouseenter', () => {
-      hoveringProfile = true;
-      revealProfileName(el);
-    });
-    el.addEventListener('mouseleave', () => {
-      hoveringProfile = false;
-      maskProfileName(el);
-    });
-  }
-
+  // Profile page: the big handle under the display name is a leaf <span> in
+  // <main> with no testid. It is NOT inside an <article> (tweets) or a link
+  // (mentions, tweet author rows), which is what distinguishes it.
   function patchProfile() {
-    if (!myHandle || hoveringProfile) return;
-    const el = document.querySelector('[data-testid="UserScreenName"]');
-    if (!el) return;
-    attachHover(el);
-    maskProfileName(el);
+    if (!myHandle) return;
+    const main = document.querySelector('main');
+    if (!main) return;
+    main.querySelectorAll('span').forEach((span) => {
+      if (span.children.length > 0) return;
+      const t = span.textContent;
+      if (!isMyHandleText(t)) return;
+      if (span.closest('article') || span.closest('a')) return;
+      maskedSpan = span;
+      if (!hovering) span.textContent = maskText(t);
+    });
   }
+
+  // Delegation on document survives React re-renders that would strip
+  // listeners attached directly to the span.
+  function hoverZone() {
+    return maskedSpan && maskedSpan.isConnected ? (maskedSpan.parentElement || maskedSpan) : null;
+  }
+
+  document.addEventListener('mouseover', (e) => {
+    const zone = hoverZone();
+    if (!zone || hovering || !zone.contains(e.target)) return;
+    hovering = true;
+    maskedSpan.textContent = '@' + myHandle;
+  });
+
+  document.addEventListener('mouseout', (e) => {
+    const zone = hoverZone();
+    if (!zone || !hovering) return;
+    if (zone.contains(e.target) && !zone.contains(e.relatedTarget)) {
+      hovering = false;
+      maskedSpan.textContent = maskText('@' + myHandle);
+    }
+  });
 
   const observer = new MutationObserver(() => {
     patchSwitcher();
@@ -84,7 +83,7 @@
   });
 
   function start() {
-    observer.observe(document.body, { childList: true, subtree: true });
+    observer.observe(document.body, { childList: true, subtree: true, characterData: true });
     patchSwitcher();
     patchProfile();
   }
