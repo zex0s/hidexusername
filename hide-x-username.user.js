@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Hide X/Twitter username (bottom-left + profile page)
+// @name         Blur X/Twitter username (bottom-left + profile page)
 // @namespace    http://tampermonkey.net/
-// @version      4.1
-// @description  Replaces your @username with question marks in the bottom-left corner of x.com and on your profile page; hovering the profile handle reveals it until the cursor leaves
+// @version      5.0
+// @description  Covers your @username with a blur box in the bottom-left corner of x.com and on your profile page; hovering reveals it until the cursor leaves
 // @match        https://x.com/*
 // @match        https://twitter.com/*
 // @run-at       document-start
@@ -12,32 +12,48 @@
 (function () {
   'use strict';
 
-  let myHandle = null;          // captured from the sidebar button before masking
-  let hovering = false;
-  let maskedSpan = null;        // last profile-handle span we masked
+  const CSS = `
+    .hxn-blur {
+      filter: blur(7px) !important;
+      background-color: rgba(128, 128, 128, 0.30) !important;
+      border-radius: 5px !important;
+      padding: 0 4px !important;
+      cursor: default !important;
+      transition: filter 0.15s ease !important;
+    }
+    .hxn-blur:hover {
+      filter: none !important;
+    }
+  `;
 
-  function maskText(t) {
-    return '@' + '?'.repeat(t.length - 1);
+  function injectStyle() {
+    if (document.getElementById('hxn-blur-style')) return;
+    const style = document.createElement('style');
+    style.id = 'hxn-blur-style';
+    style.textContent = CSS;
+    (document.head || document.documentElement).appendChild(style);
   }
+
+  let myHandle = null;   // captured from the sidebar button
 
   function isMyHandleText(t) {
     return !!myHandle && t && t.toLowerCase() === ('@' + myHandle).toLowerCase();
   }
 
+  function blurEl(el) {
+    el.classList.add('hxn-blur');
+  }
+
+  // Sidebar button: blur the leaf span holding the @handle (text stays intact)
   function patchSwitcher() {
     document.querySelectorAll('[data-testid="SideNav_AccountSwitcher_Button"]').forEach((btn) => {
-      const walker = document.createTreeWalker(btn, NodeFilter.SHOW_TEXT);
-      let node;
-      while ((node = walker.nextNode())) {
-        const t = node.nodeValue;
-        if (!t || !t.startsWith('@') || t.length < 2) continue;
+      btn.querySelectorAll('span').forEach((span) => {
+        if (span.children.length > 0) return;
+        const t = span.textContent;
+        if (!t || !t.startsWith('@') || t.length < 2) return;
         if (!myHandle) myHandle = t.slice(1);
-        const masked = maskText(t);
-        // Only write when the value actually differs: writing nodeValue fires a
-        // characterData mutation even for identical text, which would re-trigger
-        // the MutationObserver forever and freeze the page.
-        if (node.nodeValue !== masked) node.nodeValue = masked;
-      }
+        blurEl(span);
+      });
     });
   }
 
@@ -50,46 +66,22 @@
     if (!main) return;
     main.querySelectorAll('span').forEach((span) => {
       if (span.children.length > 0) return;
-      const t = span.textContent;
-      if (isMyHandleText(t)) {
-        maskedSpan = span;
-        if (!hovering) {
-          const masked = maskText(t);
-          if (span.textContent !== masked) span.textContent = masked;
-        }
-      }
+      if (!isMyHandleText(span.textContent)) return;
+      if (span.closest('article') || span.closest('a')) return;
+      blurEl(span);
     });
   }
 
-  // Delegation on document survives React re-renders that would strip
-  // listeners attached directly to the span.
-  function hoverZone() {
-    return maskedSpan && maskedSpan.isConnected ? (maskedSpan.parentElement || maskedSpan) : null;
-  }
-
-  document.addEventListener('mouseover', (e) => {
-    const zone = hoverZone();
-    if (!zone || hovering || !zone.contains(e.target)) return;
-    hovering = true;
-    maskedSpan.textContent = '@' + myHandle;
-  });
-
-  document.addEventListener('mouseout', (e) => {
-    const zone = hoverZone();
-    if (!zone || !hovering) return;
-    if (zone.contains(e.target) && !zone.contains(e.relatedTarget)) {
-      hovering = false;
-      maskedSpan.textContent = maskText('@' + myHandle);
-    }
-  });
-
+  // childList only: we now touch classes, not text, so characterData
+  // mutations from our own writes can no longer occur at all.
   const observer = new MutationObserver(() => {
     patchSwitcher();
     patchProfile();
   });
 
   function start() {
-    observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+    injectStyle();
+    observer.observe(document.body, { childList: true, subtree: true });
     patchSwitcher();
     patchProfile();
   }
